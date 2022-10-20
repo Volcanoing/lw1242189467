@@ -26,7 +26,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
 
 
     /**
-     * 默认初始值，必须是2的幂数
+     * 默认初始值，必须是2的  幂数
      */
     private static final int DEFAULT_CAPACITY = 16;
 
