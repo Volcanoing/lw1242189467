@@ -41,7 +41,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     private static final int DEFAULT_CONCURRENCY_LEVEL = 16;
 
     /**
-     * 负载因 子
+     * 负载因子
      */
     private static final float LOAD_FACTOR = 0.75f;
 
