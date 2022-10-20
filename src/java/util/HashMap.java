@@ -13,6 +13,9 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
+ * LEWISLI:待学
+ *
+ *
  * HashMap是常用的Java集合之一，是基于哈希表的Map接口的实现。与HashTable主要区别为不支持同步和允许null作为key和value。
  * HashMap非线程安全，即任一时刻可以有多个线程同时写HashMap，可能会导致数据的不一致。
  * 如果需要满足线程安全，可以用 Collections的synchronizedMap方法使HashMap具有线程安全的能力，或者使用ConcurrentHashMap。

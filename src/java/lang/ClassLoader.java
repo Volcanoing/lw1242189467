@@ -175,7 +175,7 @@ import sun.security.util.SecurityConstants;
  * @see      #resolveClass(Class)
  * @since 1.0
  */
-public abstract class ClassLoader {
+public abstract class ClassLoader{
 
     private static native void registerNatives();
     static {
@@ -401,26 +401,52 @@ public abstract class ClassLoader {
     protected Class<?> loadClass(String name, boolean resolve)
         throws ClassNotFoundException
     {
+
+        /*
+        整个 类加载的过程是加锁的,
+        TODO:疑问 这里整个过程加锁,方法中又涉及递归操作,会不会很消耗性能?
+        */
         synchronized (getClassLoadingLock(name)) {
             // First, check if the class has already been loaded
+            //先判断自己有没有加载过这个类 findLoadedClass内部调用的是native源码方法
             Class<?> c = findLoadedClass(name);
             if (c == null) {
+
+                //自己没有加载过去尝试去加载
                 long t0 = System.nanoTime();
                 try {
+                    //双亲委派,有父级加载类就调用父级(递归方法)  父子顺序是:  自定义ClassLoader < App < Ext < Bootstrap
                     if (parent != null) {
-                        c = parent.loadClass(name, false);
+                        c = parent.loadClass(name, false);  //如果自己没找到,就调用父类的类加载方法,   因为是递归方法,父类方法一开始也是执行findLoadedClass 判断自己有没有加载过
                     } else {
+
+                        /*
+                        没有父级了,表示自己就是Bootstrap加载类.
+                        那在BootstrapClass中再查找一次
+                        TODO:疑问 个人觉得此处没必要再找一次,因为进方法时 已经调用过findLoadedClass查找  (那么findLoadedClass与findBootstrapClass又何区别?)
+                         */
                         c = findBootstrapClassOrNull(name);
                     }
-                } catch (ClassNotFoundException e) {
+                } catch (ClassNotFoundException e) {        //如果一直往上的加载过程出现错误,证明该类没有办法被加载出来,直接报ClassNotFount错误即可
                     // ClassNotFoundException thrown if class not found
                     // from the non-null parent class loader
                 }
 
+
+                /*
+                父级没有找到 ,由自己去加载
+                在递归中会呈现由上往下,因为方法走完, 才会返回子级类加载器的方法中
+                尝试加载顺序: Bootstrap > Ext > App > ClassLoader
+                */
                 if (c == null) {
                     // If still not found, then invoke findClass in order
                     // to find the class.
                     long t1 = System.nanoTime();
+
+                    /*
+                    该方法才是真正类加载的方法,native修饰
+                    如果要写自定义类加载器,需要重写ClassLoaderc抽象类的findClass方法
+                    */
                     c = findClass(name);
 
                     // this is the defining class loader; record the stats
@@ -429,6 +455,8 @@ public abstract class ClassLoader {
                     sun.misc.PerfCounter.getFindClasses().increment();
                 }
             }
+
+            /*resolve表示是否需要解析(resolution 将符号引用转化为直接引用叫做解析,解析 是链接过程的第三步骤)  默认false*/
             if (resolve) {
                 resolveClass(c);
             }
@@ -509,6 +537,14 @@ public abstract class ClassLoader {
     }
 
     /**
+     * LEWISLI:已学
+     * 类加载器 加载的核心逻辑方法
+     * 需要具体实现类自己编写逻辑
+     *
+     * 核心都是IO流读取到.class文件位置
+     * 再调用defineClass方法,将class文件转化成class类的执行对象
+     * defineClass是在本抽象类中定义好的
+     *
      * Finds the class with the specified <a href="#name">binary name</a>.
      * This method should be overridden by class loader implementations that
      * follow the delegation model for loading classes, and will be invoked by
@@ -531,6 +567,8 @@ public abstract class ClassLoader {
     }
 
     /**
+     *
+     *
      * Converts an array of bytes into an instance of class <tt>Class</tt>.
      * Before the <tt>Class</tt> can be used it must be resolved.  This method
      * is deprecated in favor of the version that takes a <a
@@ -690,6 +728,12 @@ public abstract class ClassLoader {
     }
 
     /**
+     * LEWISLI:已学
+     * 将.class文件转换成class可执行文件(其实就是16位的进制码,其中A2F7 0001 F1表示一个空的构造)
+     *
+     * 参数中name是类名 bytes字节数组 off起始位置 len字节长度
+     *
+     *
      * Converts an array of bytes into an instance of class <tt>Class</tt>,
      * with an optional <tt>ProtectionDomain</tt>.  If the domain is
      * <tt>null</tt>, then a default domain will be assigned to the class as

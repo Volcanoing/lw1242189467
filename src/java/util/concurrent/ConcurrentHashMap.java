@@ -506,6 +506,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
+     * LEWISLI:已学 对桶为首节点加锁
+     *
      * putVal方法可以分为以下几步：
      * 1、检查key/value是否为空，如果为空，则抛异常，否则进行2
      * 2、进入for死循环，进行3
@@ -534,18 +536,18 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
              * 1、如果table[i]==null(即该位置的节点为空，没有发生碰撞)，则利用CAS操作直接存储在该位置， 如果CAS操作成功则退出死循环。
              * 2、如果table[i]!=null(即该位置已经有其它节点，发生碰撞)
              */
-            else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
+            else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {    //判断对因索引的桶内,有无头部节点Node
                 if (casTabAt(tab, i, null,
-                        new Node<K, V>(hash, key, value, null)))
+                        new Node<K, V>(hash, key, value, null)))    //添加方法用CAS防止并发
                     break;                   // no lock when adding to empty bin
-            } else if ((fh = f.hash) == MOVED)//检查table[i]的节点的hash是否等于MOVED，如果等于，则检测到正在扩容，则帮助其扩容
-                tab = helpTransfer(tab, f);
+            } else if ((fh = f.hash) == MOVED)//检查table[i]的节点的hash是否等于MOVED，如果等于，则检测到正在扩容，则帮助其扩容.   在数组对应桶完成扩容迁移后,会将桶节点的HashCode改为MOVED值(-1),标识FW节点.
+                tab = helpTransfer(tab, f);        //协助扩容逻辑方法
             else {//table[i]的节点的hash值不等于MOVED。
                 V oldVal = null;
-                // 针对首个节点进行加锁操作，而不是segment，进一步减少线程冲突
+                // 针对首个节点进行加锁操作，而不是(JDK7)segment，进一步减少线程冲突
                 synchronized (f) {
-                    if (tabAt(tab, i) == f) {
-                        if (fh >= 0) {
+                    if (tabAt(tab, i) == f) {   //获得锁后,重新判断当前头部节点,有没有发生改变,第一是担心其他刚释放锁的线程,已将该桶转成红黑树,红黑树的头部节点与 链表的首节点可能不相同.
+                        if (fh >= 0) {      // TODO:疑问  大于0表示该桶是链表结构,因为红黑树会标记为-2,被迁移会标记为-1
                             binCount = 1;
                             for (Node<K, V> e = f; ; ++binCount) {
                                 K ek;
@@ -588,7 +590,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                 }
             }
         }
-        // 计数增加1，有可能触发transfer操作(扩容)
+        // 计数增加1，判断是否超出阈值,有可能触发transfer操作(扩容)
         addCount(1L, binCount);
         return null;
     }
@@ -1737,26 +1739,27 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
      * Must be negative when shifted left by RESIZE_STAMP_SHIFT.
      */
     static final int resizeStamp(int n) {
-        return Integer.numberOfLeadingZeros(n) | (1 << (RESIZE_STAMP_BITS - 1));
+        return Integer.numberOfLeadingZeros(n) | (1 << (RESIZE_STAMP_BITS - 1));    //1左移动15位 得到 0000 0000 0000 0000 1000 0000 0000 0000 值 再与 Integer.numberOfLeadingZeros(n)  或运算 .结果第17位一定是1
     }
 
     /**
+     * LEWISLI:已学 初始化数组方法,通过CAS上锁,通过死循环自旋,直到有线程完成初始化工作
      * Initializes table, using the size recorded in sizeCtl.
      */
     private final Node<K, V>[] initTable() {
         Node<K, V>[] tab;
         int sc;
         while ((tab = table) == null || tab.length == 0) {
-            if ((sc = sizeCtl) < 0)
+            if ((sc = sizeCtl) < 0)     //小于0表示正在初始化或者扩容
                 Thread.yield(); // lost initialization race; just spin
-            else if (U.compareAndSwapInt(this, SIZECTL, sc, -1)) {
+            else if (U.compareAndSwapInt(this, SIZECTL, sc, -1)) {  //通过CAS争夺锁已初始化数组
                 try {
-                    if ((tab = table) == null || tab.length == 0) {
-                        int n = (sc > 0) ? sc : DEFAULT_CAPACITY;
+                    if ((tab = table) == null || tab.length == 0) { //双检锁 防止while判断时为true,已进入循环的线程,重复执行初始化方法.且该线程同样可以获得CAS锁(因为初始化完成后,SIZECTL值将记录扩容阈值)
+                        int n = (sc > 0) ? sc : DEFAULT_CAPACITY;   //此处sc为0时,表示调用了默认构造方法,则取16为默认容量
                         @SuppressWarnings("unchecked")
                         Node<K, V>[] nt = (Node<K, V>[]) new Node<?, ?>[n];
                         table = tab = nt;
-                        sc = n - (n >>> 2);
+                        sc = n - (n >>> 2);     //0.75n,即扩容阈值
                     }
                 } finally {
                     sizeCtl = sc;
@@ -1768,6 +1771,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
+     * LEWISLI:待学  1维护数组长度, 2判断是否需要扩容
+     * 使用到LongAdder知识点
      * Adds to count, and if table is too small and not already
      * resizing, initiates transfer. If already resizing, helps
      * perform transfer if work is available.  Rechecks occupancy
@@ -1778,10 +1783,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
      * @param check if <0, don't check resize, if <= 1 only check if uncontended
      */
     private final void addCount(long x, int check) {
-        CounterCell[] as;
+        CounterCell[] as;       //LongAdder叠加所需数组,用于记录并发时,其他线程baeCount+1的值.   实际baseCount最终值应该是 baseCount值+该数组内值的总和
         long b, s;
         if ((as = counterCells) != null ||
-                !U.compareAndSwapLong(this, BASECOUNT, b = baseCount, s = b + x)) {
+                !U.compareAndSwapLong(this, BASECOUNT, b = baseCount, s = b + x)) { //当前baseCount值与实际的baseCount一直时,先尝试最简单点CAS原子级+1操作, 能成功则万事大吉,证明未发生并发冲突
+            //如果线程CAS尝试失败了,则进去if代码块逻辑,启用CounterCell数组
             CounterCell a;
             long v;
             int m;
@@ -1789,21 +1795,27 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             if (as == null || (m = as.length - 1) < 0 ||
                     (a = as[ThreadLocalRandom.getProbe() & m]) == null ||
                     !(uncontended =
-                            U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))) {
+                            U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))) {  //CounterCell存在,会尝试对CounterCell中某一元素 使用CAS直接+1.如果成功万事大吉,证明该元素上没遇到并发冲突
+
+                //如果是第一次启用CounterCell数组,或者对CounterCell中某一元素尝试CAS加1 依然失败了,则进入fullAddCount方法
                 fullAddCount(x, uncontended);
                 return;
             }
             if (check <= 1)
                 return;
-            s = sumCount();
+            s = sumCount();     //该方法就是将baseCount值与CounterCell数组值总和 累加返回
         }
-        if (check >= 0) {
+        if (check >= 0) {       //只有添加方法时调用addCount,check才会传大于0,删除或替换元素是,传入的check小于0,且不需要判断扩容
+
+            /*判断是否需要扩容*/
             Node<K, V>[] tab, nt;
             int n, sc;
-            while (s >= (long) (sc = sizeCtl) && (tab = table) != null &&
+            while (s >= (long) (sc = sizeCtl) && (tab = table) != null &&       // 判断数组已经初始化了 且当前元素个数已经大于等于阈值
                     (n = tab.length) < MAXIMUM_CAPACITY) {
+
+                /*需要做扩容操作*/
                 int rs = resizeStamp(n);
-                if (sc < 0) {
+                if (sc < 0) {       //该值是扩容阈值,第一次不可能小于O
                     if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 ||
                             sc == rs + MAX_RESIZERS || (nt = nextTable) == null ||
                             transferIndex <= 0)
@@ -1811,7 +1823,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                     if (U.compareAndSwapInt(this, SIZECTL, sc, sc + 1))
                         transfer(tab, nt);
                 } else if (U.compareAndSwapInt(this, SIZECTL, sc,
-                        (rs << RESIZE_STAMP_SHIFT) + 2))
+                        (rs << RESIZE_STAMP_SHIFT) + 2))        //rs原先第17位是1,左移16位后则第一位是1,其实就是一个负数(-0),且因为做了加2(实际意义上是-2)得到-2,以表示一个线程正在参与 (所以sizeCtl为-2一下时,表示正在做扩容)
+                    /*CAS变更成功的线程获取的扩容锁 调用扩容方法transfer*/
                     transfer(tab, null);
                 s = sumCount();
             }
@@ -1888,17 +1901,27 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
+     * LEWISLI:待学 多线程协助扩容的方法
+     * 将旧数组 根据CPU(即最大线程数)化分成多个小块,
+     * 再由各个线程完成自己的任务块
+     *
      * Moves and/or copies the nodes in each bin to new table. See
      * above for explanation.
+     *
+     * @param tab 准备做扩容的原数组
+     * @param nextTab 是null表示当前线程调用了扩容, 非null表示将要协助其他线程完成扩容
      */
     private final void transfer(Node<K, V>[] tab, Node<K, V>[] nextTab) {
         int n = tab.length, stride;
-        if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)
+        //NCPU > 1是一定的,因为CPU=1即单线程,则不会所谓的并发问题(那使用普通HashMap即可)
+        if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)     //计算每个线程需要处理的任务量,总数组长度/8/CPU数量 ,如4核时 128长度数组 每个线程任务 128/8/4 = 4,  但小于16时会强制分到16个任务块
             stride = MIN_TRANSFER_STRIDE; // subdivide range
-        if (nextTab == null) {            // initiating
+        if (nextTab == null) {            // initiating  null表示当前线程调用了扩容,则需要初始化nextTab数组
+
+            /*需要初始化nextTab数组*/
             try {
                 @SuppressWarnings("unchecked")
-                Node<K, V>[] nt = (Node<K, V>[]) new Node<?, ?>[n << 1];
+                Node<K, V>[] nt = (Node<K, V>[]) new Node<?, ?>[n << 1];    //初始化nextTab数组,长度是原来的2倍
                 nextTab = nt;
             } catch (Throwable ex) {      // try to cope with OOME
                 sizeCtl = Integer.MAX_VALUE;
@@ -1907,6 +1930,9 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             nextTable = nextTab;
             transferIndex = n;
         }
+
+
+        /*从后往前迁移,迁移完成后会将节点改为Fwd节点,Fw节点的hashCode值是MODE -1*/
         int nextn = nextTab.length;
         ForwardingNode<K, V> fwd = new ForwardingNode<K, V>(nextTab);
         boolean advance = true;
@@ -1914,6 +1940,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
         for (int i = 0, bound = 0; ; ) {
             Node<K, V> f;
             int fh;
+
+            /*给当前线程分配任务,即给他起步节点,他会一直往前领取他的任务量stride个, 并将初始值向前移动stride,  让其他线程根据新的起步节点开始获取任务*/
             while (advance) {
                 int nextIndex, nextBound;
                 if (--i >= bound || finishing)
@@ -1924,32 +1952,76 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                 } else if (U.compareAndSwapInt
                         (this, TRANSFERINDEX, nextIndex,
                                 nextBound = (nextIndex > stride ?
-                                        nextIndex - stride : 0))) {
+                                        nextIndex - stride : 0))) {         //计算下一个线程开始任务的初始位置,当前指引位置(从后往前)-任务长度stride.如果剩余节点不足stride,那返回0,标识第一份节点
                     bound = nextBound;
                     i = nextIndex - 1;
                     advance = false;
                 }
             }
-            if (i < 0 || i >= n || i + n >= nextn) {
+            if (i < 0 || i >= n || i + n >= nextn) {        //todo:疑问 表示当前线程已经完成任务
                 int sc;
-                if (finishing) {
+                if (finishing) {        //todo:疑问 finishing表示所有线程都完成了任务,即迁移全部完成
                     nextTable = null;
                     table = nextTab;
                     sizeCtl = (n << 1) - (n >>> 1);
                     return;
                 }
-                if (U.compareAndSwapInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {
+
+                if (U.compareAndSwapInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {     //SC-1(实际意义上是+1, 举例从-4到-3) 表示我已经完成了我的工作,我将退出协助,所以协助数少了1个
+
+                    /*
+                    todo:关键 下面if 用于判断扩容工作 是否全部完成
+                    第一个需要扩容的线程进入transfer扩容方法时,
+                    已经将SIZECTL值标记为 resizeStamp(n) << RESIZE_STAMP_SHIFT) + 2 ,其实是-2 ,表示只有一个线程做扩容
+
+                    其他线程加入协助扩容工作时,也会将SIZECTL值减一,表示有一个线程加入该工作
+
+                    所以,如果现在sizeCtl已经等于 resizeStamp(n) << RESIZE_STAMP_SHIFT) + 2, 即-2(表示只有一个线程在扩容时)
+                    就表示,还是只有一个线程在做扩容,那他就是最后的那一个线程,他完成了,即全部完成了
+
+                    todo:疑问  有没有可能其他线程一直都没有加入,而当前线程做完工作只处理了一部分节点呢???
+                    */
                     if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
                         return;
-                    finishing = advance = true;
+                    finishing = advance = true;         // finishing改为true时,下一个线程完成任务 走到 if (i < 0 || i >= n || i + n >= nextn) { 代码块中时, 就表示最后一个任务线程,他不会再走到Sizetl-1的逻辑
                     i = n; // recheck before commit
                 }
-            } else if ((f = tabAt(tab, i)) == null)
-                advance = casTabAt(tab, i, null, fwd);
+            }
+
+            /*迁移逻辑*/
+            else if ((f = tabAt(tab, i)) == null)
+                advance = casTabAt(tab, i, null, fwd);      //  如果当前节点是空的,直接标记上FWD
             else if ((fh = f.hash) == MOVED)
-                advance = true; // already processed
+                advance = true; // already processed        //  如果当前节点已经是FWD不做操作,跳过
             else {
+
+
+                /*
+                如果当前节点有元素,则开始迁移
+                迁移时 头节点需要加锁
+                防止迁移过程中,其他线程对桶内元素发生增删改操作
+
+                头部节点上锁的逻辑,在putVal方法中也有,
+                则表示扩容和修改元素的操作是互斥的,
+                谁想抢到头部节点的锁,谁先操作,
+                没抢到就等到锁释放
+                */
                 synchronized (f) {
+
+                    /*
+                    迁移过程同HashMap一致
+
+                    迁移前,无论桶内是链表还是红黑树,
+                    红黑树拆分重组为链表
+                    再以链表进行挨个迁移判断
+
+                    迁移会根据当前桶索引,
+                    判断(hash&ddCap),数组高1位值是0或1,
+                    0则放在新数组同下标的位置
+                    1的话放在同下标+原数组长度的桶位置
+
+                    迁移后判断桶内长度是否大于8,大于需要进行转红黑树
+                    */
                     if (tabAt(tab, i) == f) {
                         Node<K, V> ln, hn;
                         if (fh >= 0) {
@@ -2037,6 +2109,11 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
         }
     }
 
+
+    /**
+     * LEWISLI:已学 将baseCount值与CounterCell数组中的值累加返回,返回值就是真正的数组长度值
+     * @return 真正的数组长度值
+     */
     final long sumCount() {
         CounterCell[] as = counterCells;
         CounterCell a;
@@ -2050,26 +2127,41 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
         return sum;
     }
 
-    // See LongAdder version for explanation
+    /**
+     * LEWISLI:已学 关键逻辑方法
+     *
+     *
+     * @param x 需要加的数值(1)
+     * @param wasUncontended 表示进方法前,是否尝试过一次
+     * See LongAdder version for explanation
+     */
     private final void fullAddCount(long x, boolean wasUncontended) {
         int h;
-        if ((h = ThreadLocalRandom.getProbe()) == 0) {
+        /*取得一个CounterCell 数组的随机下标数 具体取法未深究*/
+        if ((h = ThreadLocalRandom.getProbe()) == 0) {  //todo:疑问 为什么去到0需要进if代码块重新取值
             ThreadLocalRandom.localInit();      // force initialization
             h = ThreadLocalRandom.getProbe();
             wasUncontended = true;
         }
+
+
+        /*死循环直至有一线程加1成功*/
         boolean collide = false;                // True if last slot nonempty
         for (; ; ) {
             CounterCell[] as;
             CounterCell a;
             int n;
             long v;
-            if ((as = counterCells) != null && (n = as.length) > 0) {
-                if ((a = as[(n - 1) & h]) == null) {
-                    if (cellsBusy == 0) {            // Try to attach new Cell
-                        CounterCell r = new CounterCell(x); // Optimistic create
-                        if (cellsBusy == 0 &&
+            if ((as = counterCells) != null && (n = as.length) > 0) {   //如果counterCells已存在,进入if代码块,否则进入else对counterCells初始化
+                if ((a = as[(n - 1) & h]) == null) {            //判断对应位置有无CounterCell对象
+
+                    /*当前下标中无CounterCell对象,则需要创建一个*/
+                    if (cellsBusy == 0) {            // cellsBusy状态值 是用于判断是否其他线程正在创建对象的 0表示空闲,1表示上锁,锁是通过CAS争夺
+                        CounterCell r = new CounterCell(x); // Optimistic create  创建时将X赋值对象内
+                        if (cellsBusy == 0 &&       //再次判断cellsBusy状态值 并进行锁的争夺操作将其值改为1. 争夺锁成功的才能把CounterCell对象放入counterCells数组中
                                 U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {
+
+                            /*将对象CounterCell放入数组中*/
                             boolean created = false;
                             try {               // Recheck under lock
                                 CounterCell[] rs;
@@ -2081,45 +2173,47 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                                     created = true;
                                 }
                             } finally {
-                                cellsBusy = 0;
+                                cellsBusy = 0;      //改回0表示锁释放
                             }
                             if (created)
-                                break;
-                            continue;           // Slot is now non-empty
+                                break;              //因为初始化操作中已经将
+                            continue;           // 如果失败,重新循环尝试
                         }
                     }
                     collide = false;
-                } else if (!wasUncontended)       // CAS already known to fail
+                } else if (!wasUncontended)       // CAS already known to fail      //wasUncontended是入参,是调用该方法前,是否尝试过一次CAS加操作,如果尝试过,就跳过下面的尝试,并把wasUncontended改回true
                     wasUncontended = true;      // Continue after rehash
-                else if (U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))
+                else if (U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))    //当前下标中有CounterCell对象,再次使用CAS尝试+X操作,成功则可跳出循环
                     break;
-                else if (counterCells != as || n >= NCPU)
+                else if (counterCells != as || n >= NCPU)                           //NCPU表示CPU核数,4核的最多只有4个线程工作,那么数组长度超过4之后没有意义
                     collide = false;            // At max size or stale
-                else if (!collide)
+                else if (!collide)          //当线程循环第一次走到这,因为collide初始值是false.则会走进if代码块,不会对counterCells进行扩容,第二次循环到此,因为值已经被改为true,则会走下面的扩容方法.也就是保证,至少两次循环尝试才会触发一次扩容
                     collide = true;
                 else if (cellsBusy == 0 &&
-                        U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {
+                        U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {       //通过CAS争夺到counterCells的扩容工作
+
+                    /*counterCells数组逻辑*/
                     try {
                         if (counterCells == as) {// Expand table unless stale
-                            CounterCell[] rs = new CounterCell[n << 1];
+                            CounterCell[] rs = new CounterCell[n << 1];     //扩容counterCells数组,长度原先2倍
                             for (int i = 0; i < n; ++i)
-                                rs[i] = as[i];
-                            counterCells = rs;
+                                rs[i] = as[i];              //将数组内容做迁移到新数组中
+                            counterCells = rs;              //将新数组替代旧counterCells
                         }
                     } finally {
                         cellsBusy = 0;
                     }
                     collide = false;
-                    continue;                   // Retry with expanded table
+                    continue;                   // Retry with expanded table 因为扩容操作中,只做了扩容,并未进行+x计算,重新开始循环
                 }
                 h = ThreadLocalRandom.advanceProbe(h);
             } else if (cellsBusy == 0 && counterCells == as &&
-                    U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {
+                    U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {       //通过CAS争夺到counterCells的初始化工作
                 boolean init = false;
                 try {                           // Initialize table
                     if (counterCells == as) {
-                        CounterCell[] rs = new CounterCell[2];
-                        rs[h & 1] = new CounterCell(x);
+                        CounterCell[] rs = new CounterCell[2];      //首次初始化数组长度2
+                        rs[h & 1] = new CounterCell(x);             //并在第一次初始化锁中,将值设为待加值X,就不需要在进行计算
                         counterCells = rs;
                         init = true;
                     }
@@ -2127,8 +2221,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                     cellsBusy = 0;
                 }
                 if (init)
-                    break;
-            } else if (U.compareAndSwapLong(this, BASECOUNT, v = baseCount, v + x))
+                    break;          //因为创建数组时,已经做了+X计算逻辑,所以可以跳出循环
+            } else if (U.compareAndSwapLong(this, BASECOUNT, v = baseCount, v + x))     //如果数组正在被创建中,我再试试对baseCount进行CAS加X操作
                 break;                          // Fall back on using base
         }
     }
@@ -2136,6 +2230,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     /* ---------------- Conversion from/to TreeBins -------------- */
 
     /**
+     * LEWISLI:已学,判断是否需要树化
      * Replaces all linked nodes in bin at given index unless table is
      * too small, in which case resizes instead.
      */
@@ -2143,10 +2238,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
         Node<K, V> b;
         int n, sc;
         if (tab != null) {
-            if ((n = tab.length) < MIN_TREEIFY_CAPACITY)
-                tryPresize(n << 1);
+            if ((n = tab.length) < MIN_TREEIFY_CAPACITY)    //数组长度小于64时,只需要扩容. 因为转树操作开销大.而且数组太小,转成树效率并不会更优,且数组太小意味着即将可能需要再次扩容,此时进行树化无意义多此一举
+                tryPresize(n << 1);     //2倍扩容方法
             else if ((b = tabAt(tab, index)) != null && b.hash >= 0) {
-                synchronized (b) {
+                synchronized (b) {      //树化操作.红黑树知识难点
                     if (tabAt(tab, index) == b) {
                         TreeNode<K, V> hd = null, tl = null;
                         for (Node<K, V> e = b; e != null; e = e.next) {

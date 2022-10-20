@@ -106,9 +106,20 @@ import java.util.Collection;
 public class ReentrantLock implements Lock, java.io.Serializable {
     private static final long serialVersionUID = 7373984872572414699L;
     /** Synchronizer providing all implementation mechanics */
-    private final Sync sync;
+    private final Sync sync;        //sync的初始化在ReetrantLock的构造函数中就确定,确定后是实例公平锁,还是非公平锁,实例之后不可变更
 
     /**
+     * 锁的抽象类,有唯二的两个实现,分别就是FairSync和NofairSync
+     *
+     * 该抽象类中定义了lock方法,必须要被实现
+     * 也写了final修饰的公用的nonfairTryAcquire非公平锁try方法,
+     * 这说明了就算是FairSync公平锁,也一定会用到非公平锁的try方法
+     *
+     * 也已经规范好了其他 公共的方法.如tryRelease ,isHeldExclusively等
+     *
+     * 其实他的实现中, 只需要重写它定义的lock方法
+     * 以及AQS接口的tryAcquire()方法
+     *
      * Base of synchronization control for this lock. Subclassed
      * into fair and nonfair versions below. Uses AQS state to
      * represent the number of holds on the lock.
@@ -123,21 +134,46 @@ public class ReentrantLock implements Lock, java.io.Serializable {
         abstract void lock();
 
         /**
+         * LEWISLI:已学
+         * tryLock方法,在不报错正常返回时,就表示获取锁成功了.
+         *
+         * 注:该方法逻辑其实等同于FairSync实现类中的tryAcquire方法一致
+         * 唯一的区别在于,这里调用CAS获取锁之前
+         * 并不会去判断AQS锁队列的状态(其余代码完全一致)
+         *
          * Performs non-fair tryLock.  tryAcquire is implemented in
          * subclasses, but both need nonfair try for trylock method.
          */
         final boolean nonfairTryAcquire(int acquires) {
             final Thread current = Thread.currentThread();
-            int c = getState();
+            int c = getState();     //判断当前锁的状态,0代表未被占用
             if (c == 0) {
-                if (compareAndSetState(0, acquires)) {
+
+                /*
+                直接CAS争夺锁,所以叫非公平
+                而在公平锁的实现中,这里会先调用hasQueuedPredecessors方法,根据队列情况,判断自己是否需要排队
+                这就是公平与非公平的区别之一
+                */
+                if (compareAndSetState(0, acquires)) {      //CAS争夺锁
+                    //获取锁成功,将当前线程记录在 AQS的thread属性中
                     setExclusiveOwnerThread(current);
                     return true;
                 }
             }
+
+
+            /*
+            这里是ReentrantLock可重入得体现
+            如果state状态非0时,判断当前线程就是获取锁的线程本身
+            会将state加1,表示上锁次数加1,并返回true表示获取锁成功
+            (注:当然解锁时,也需要解到0才能真正的释放锁)
+
+            TODO:疑问 但是发现这里对state值重入加1的时,并没有上锁,不会有并发问题吗
+            */
             else if (current == getExclusiveOwnerThread()) {
                 int nextc = c + acquires;
                 if (nextc < 0) // overflow
+                    //这里的负数,是当值达到了int最大值,也就是首位字节等于1,所以会表示成负数
                     throw new Error("Maximum lock count exceeded");
                 setState(nextc);
                 return true;
@@ -145,6 +181,15 @@ public class ReentrantLock implements Lock, java.io.Serializable {
             return false;
         }
 
+
+        /**
+         * LEWISLI:已学
+         * 尝试释放锁,这里的返回值true false表示的是,整个锁是否被成功释放
+         * 重入锁需要把重入的锁全部释放,才算锁释放
+         *
+         * @param releases
+         * @return
+         */
         protected final boolean tryRelease(int releases) {
             int c = getState() - releases;
             if (Thread.currentThread() != getExclusiveOwnerThread())
@@ -158,26 +203,48 @@ public class ReentrantLock implements Lock, java.io.Serializable {
             return free;
         }
 
+        /**
+         * LEWISLI:已学
+         * TODO:疑问 对该方法的解释,还未读懂
+         * A理解:是判断该锁是不是独占锁
+         * B理解:判断调用该方法的线程 是否是 已获得锁的独占线程(我觉得B更贴切)
+         */
         protected final boolean isHeldExclusively() {
             // While we must in general read state before owner,
             // we don't need to do so to check if current thread is owner
             return getExclusiveOwnerThread() == Thread.currentThread();
         }
 
+        /**
+         * LEWISLI:已学
+         * 新建一个Condition条件队列
+         * 对条件队列的解释,在Lock接口中已备注
+         */
         final ConditionObject newCondition() {
             return new ConditionObject();
         }
 
-        // Methods relayed from outer class
-
+        /**
+         * LEWISLI:已学
+         * 获取当前正在占有锁的线程
+         * Methods relayed from outer class
+         */
         final Thread getOwner() {
             return getState() == 0 ? null : getExclusiveOwnerThread();
         }
 
+        /**
+         * LEWISLI:已学
+         * 获取锁的数值
+         */
         final int getHoldCount() {
             return isHeldExclusively() ? getState() : 0;
         }
 
+        /**
+         * LEWISLI:已学
+         * 判断锁的状态
+         */
         final boolean isLocked() {
             return getState() != 0;
         }
@@ -199,6 +266,18 @@ public class ReentrantLock implements Lock, java.io.Serializable {
         private static final long serialVersionUID = 7316153563782823691L;
 
         /**
+         * LEWISLI:已学
+         * 非公平锁,一上来就是CAS抢锁
+         *
+         * 失败后才会调用acquire获取锁方法
+         * acquire在AQS中实现,acquire第一步是调用了tryAcquire
+         * tryAcquire被NonfairSync重写,会调用了nonfairTryAcquire方法
+         * 而nonfairTryAcquire方法的第一件事,就是判断锁状态是0时(未占用),再尝试一次CAS抢锁
+         * 再次CAS失败才会加入所队列排队,加入后就与公平锁无异
+         *
+         * 以上5行废话,我只想表达:
+         * 实际上 非公平锁最多做了2次CAS尝试,都失败了,才会老实的加入排队
+         *
          * Performs lock.  Try immediate barge, backing up to normal
          * acquire on failure.
          */
@@ -230,17 +309,35 @@ public class ReentrantLock implements Lock, java.io.Serializable {
          */
         protected final boolean tryAcquire(int acquires) {
             final Thread current = Thread.currentThread();
-            int c = getState();
+            int c = getState();     //判断当前锁的状态,0代表未被占用
             if (c == 0) {
+
+                /*
+                这里会先调用hasQueuedPredecessors方法,根据队列情况,判断自己是否需要排队
+                而在非公平锁的实现(nonfairTryAcquire)中 不会调用该判断方法
+                这就是公平与非公平的区别之一
+                */
                 if (!hasQueuedPredecessors() &&
-                    compareAndSetState(0, acquires)) {
+                    compareAndSetState(0, acquires)) {  //CAS争夺锁
+                    //获取锁成功,将当前线程记录在 AQS的thread属性中
                     setExclusiveOwnerThread(current);
                     return true;
                 }
             }
+
+
+            /*
+            这里是ReentrantLock可重入得体现
+            如果state状态非0时,判断当前线程就是获取锁的线程本身
+            会将state加1,表示上锁次数加1,并返回true表示获取锁成功
+            (注:当然解锁时,也需要解到0才能真正的释放锁)
+
+            TODO:疑问 但是发现这里对state值重入加1的时,并没有上锁,不会有并发问题吗
+            */
             else if (current == getExclusiveOwnerThread()) {
                 int nextc = c + acquires;
                 if (nextc < 0)
+                    //这里的负数,是当值达到了int最大值,也就是首位字节等于1,所以会表示成负数
                     throw new Error("Maximum lock count exceeded");
                 setState(nextc);
                 return true;
@@ -268,6 +365,11 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     /**
+     * LEWISLI:已学
+     * 直接调用Sync接口的lock方法
+     * 具体是调用FairSync还是NofairSync,需要根据ReentrantLock的初始化决定 (其他方法几乎同理)
+     *
+     *
      * Acquires the lock.
      *
      * <p>Acquires the lock if it is not held by another thread and returns
@@ -286,6 +388,11 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     /**
+     * LEWISLI:已学
+     * 直接调用Sync接口的lockInterruptibly方法
+     * 具体是调用FairSync还是NofairSync,需要根据ReentrantLock的初始化决定 (其他方法几乎同理)
+     *
+     *
      * Acquires the lock unless the current thread is
      * {@linkplain Thread#interrupt interrupted}.
      *
@@ -336,6 +443,19 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     /**
+     * LEWISLI:已学
+     * 直接调用Sync接口的nonfairTryAcquire方法
+     *
+     * 无论是公平锁,还是非公平锁,tryLock的方法都是非公平的
+     * 因为它被明确要求,马上做一次尝试
+     * 它需要马上告诉调用者 成功或失败
+     * 所以它不会去排队
+     *
+         * 也解释了,为什么会nonfairTryAcquire()被写在Sync抽象类中
+     * 而不是非公平锁的实现中
+     * 因为公平锁也需要调用该方法
+     *
+     *
      * Acquires the lock only if it is not held by another thread at the time
      * of invocation.
      *
@@ -366,6 +486,13 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     /**
+     * LEWISLI:待学
+     * 此处逻辑应该比我想象中更复杂
+     * TODO:猜测 或许是nonfairTryAcquire的自旋实现,再会加上时间倒计时
+     *
+     * TODO:疑问 (但无限的自旋不会很消耗性能吗)
+     *
+     *
      * Acquires the lock if it is not held by another thread within the given
      * waiting time and the current thread has not been
      * {@linkplain Thread#interrupt interrupted}.
@@ -443,6 +570,11 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     /**
+     * LEWISLI:已学
+     * 直接调用Sync接口的release方法
+     * 具体是调用FairSync还是NofairSync,需要根据ReentrantLock的初始化决定 (其他方法几乎同理)
+     *
+     *
      * Attempts to release this lock.
      *
      * <p>If the current thread is the holder of this lock then the hold

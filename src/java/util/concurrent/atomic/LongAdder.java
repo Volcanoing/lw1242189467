@@ -1,42 +1,11 @@
-/*
- * ORACLE PROPRIETARY/CONFIDENTIAL. Use is subject to license terms.
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- *
- */
-
-/*
- *
- *
- *
- *
- *
- * Written by Doug Lea with assistance from members of JCP JSR-166
- * Expert Group and released to the public domain, as explained at
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
-
 package java.util.concurrent.atomic;
 import java.io.Serializable;
 
 /**
+ * LEWISLI:待学
+ *
+ *
+ *
  * One or more variables that together maintain an initially zero
  * {@code long} sum.  When updates (method {@link #add}) are contended
  * across threads, the set of variables may grow dynamically to reduce

@@ -53,6 +53,10 @@ import java.util.function.UnaryOperator;
 import sun.misc.SharedSecrets;
 
 /**
+ * LEWISLI:待学
+ *
+ *
+ *
  * A thread-safe variant of {@link java.util.ArrayList} in which all mutative
  * operations ({@code add}, {@code set}, and so on) are implemented by
  * making a fresh copy of the underlying array.

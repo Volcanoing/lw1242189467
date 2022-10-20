@@ -6,6 +6,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
+ * LEWISLI:待学
+ *
+ *
+ *
+ *
+ *
  * 线程局部缓存：为线程缓存数据，数据独享
  * 原理：
  * 1. 每个线程由一个 ThreadLocalMap 属性，本质就是一个 map

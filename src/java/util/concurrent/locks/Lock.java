@@ -167,6 +167,11 @@ import java.util.concurrent.TimeUnit;
 public interface Lock {
 
     /**
+     * LEWISLI:已学
+     * 自旋获取锁,直到成功为止
+     * 所以只要方法正常结束了,就表示获取锁成功了
+     *
+     *
      * Acquires the lock.
      *
      * <p>If the lock is not available then the current thread becomes
@@ -184,6 +189,18 @@ public interface Lock {
     void lock();
 
     /**
+     * LEWISLI:已学
+     * 同Lock但是被中断,会退出等待并 相应的抛出异常
+     *
+     * Lock与LockInterrruptibly的区别也在  AQS代码中acquire与doAcquireInterruptibly也有类似的提现
+     * acquire与doAcquireInterruptibly中都曾调用到中断线程的parkAndCheckInterrupt方法
+     * 但是当该方法返回true表示了线程曾被中断的时候
+     * acquire中返回true时,不做处理,(他只是再次把线程打上中断标记,因为判断是否被中断时,中断标记会被重置,为防止系统行为改变用户行为,所以不能让标记被重置,需要做还原逻辑,其实在acquire中,这样的判断又还原的操作是毫无意义的)
+     * doAcquireInterruptibly中返回true时,会进入if代码块,并且抛出InterruptedException异常,做出反应
+     *
+     * lockInterruptibly的设计类似于doAcquireInterruptibly
+     *
+     *
      * Acquires the lock unless the current thread is
      * {@linkplain Thread#interrupt interrupted}.
      *
@@ -232,6 +249,10 @@ public interface Lock {
     void lockInterruptibly() throws InterruptedException;
 
     /**
+     * LEWISLI:已学
+     * 尝试获取锁,只获取一次,成功true 失败false
+     *
+     *
      * Acquires the lock only if it is free at the time of invocation.
      *
      * <p>Acquires the lock if it is available and returns immediately
@@ -261,6 +282,14 @@ public interface Lock {
     boolean tryLock();
 
     /**
+     * LEWISLI:已学
+     * tryLock的有参方法,被中断时会抛出中断异常
+     *
+     * 可以通过参数设置尝试的时间,
+     * 个人认为,它更像是个,被加了时间限制的Lock方法
+     *
+     *
+     *
      * Acquires the lock if it is free within the given waiting time and the
      * current thread has not been {@linkplain Thread#interrupt interrupted}.
      *
@@ -321,6 +350,14 @@ public interface Lock {
     boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
 
     /**
+     *
+     * LEWISLI:已学
+     * 它是一个释放锁方法,
+     * 获取锁成功的线程,最终都需要取释放锁
+     *
+     * 所以该方法建议在finally代码块中执行
+     *
+     *
      * Releases the lock.
      *
      * <p><b>Implementation Considerations</b>
@@ -335,6 +372,25 @@ public interface Lock {
     void unlock();
 
     /**
+     * LEWISLI:待学
+     * 新建一个绑定在Lock上的Condition对象(条件队列)
+     *
+     * 条件对象的解释(文本解释):表示一个等待状态
+     * 有一些已经获得锁的线程,在某些时刻,需要等待一些条件的完成
+     * 可以使用wait挂起,再通过notify唤醒
+     *
+     * 但也可以使用Condition
+     * 通过await方法注册在Condition上进行挂起
+     * 之后时机到了,再通过signal方法被唤醒
+     *
+     * 优势在于,Condition是队列
+     * 而且Lock上也可以绑定多个这样的队列
+     * 这样wait的线程,可以根据客户需求分类放在各个Condition队列上
+     * 然后一次性唤醒
+     * Condition还提供了限时,中断等功能,丰富了线程调度
+     * 这也是普通wait和notify所不能实现的
+     *
+     *
      * Returns a new {@link Condition} instance that is bound to this
      * {@code Lock} instance.
      *

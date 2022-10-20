@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.*;
 
 /**
+ * LEWISLI:待学
+ *
+ *
  * An {@link ExecutorService} that executes each submitted task using
  * one of possibly several pooled threads, normally configured
  * using {@link Executors} factory methods.

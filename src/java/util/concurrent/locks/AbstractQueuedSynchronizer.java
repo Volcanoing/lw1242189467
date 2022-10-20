@@ -485,6 +485,16 @@ public abstract class AbstractQueuedSynchronizer
         }
 
         /**
+         * LEWISLI:已读
+         * 获取该Node的前一个Node
+         *
+         * 初始化时已经生成了一个值为空的Node
+         * 会一直充当头部节点
+         *
+         * 之后无论队列增减,头部空Node节点都是一直要存在的
+         * 所以不允许有线程,存在前一个节点是null的情况
+         * 如果有,必须抛异常
+         *
          * Returns previous node, or throws NullPointerException if null.
          * Use when predecessor cannot be null.  The null check could
          * be elided, but is present to help the VM.
@@ -576,6 +586,15 @@ public abstract class AbstractQueuedSynchronizer
     static final long spinForTimeoutThreshold = 1000L;
 
     /**
+     *
+     * LEWISLI:已学
+     *
+     * ENQ是一个自旋的入队方法
+     * 所以调用该方法后,一定会入队成功
+     *
+     * 如果初始化时,或加入尾部时的CAS失败了
+     * 还会一直循环,拿去最新的尾部Node,再次尝试尾插逻辑,直到成功
+     *
      * Inserts node into queue, initializing if necessary. See picture above.
      * @param node the node to insert
      * @return node's predecessor
@@ -583,30 +602,51 @@ public abstract class AbstractQueuedSynchronizer
     private Node enq(final Node node) {
         for (;;) {
             Node t = tail;
-            if (t == null) { // Must initialize
-                if (compareAndSetHead(new Node()))
-                    tail = head;
+            if (t == null) {
+
+                /*第一次初始化时,尾部节点为空,需要调用初始化*/
+                if (compareAndSetHead(new Node()))      //CAS初始化 生成一个空的头部节点(该Node的Thead参数为空)
+                    tail = head;            //初始化后,尾部Node就是头部Node 因为只有一个Node.  初始化成功后,还是后重新循环,尝试尾插
+
             } else {
+
+                /*第二次进来入,Node队列已经存在*/
                 node.prev = t;
-                if (compareAndSetTail(t, node)) {
-                    t.next = node;
-                    return t;
+                if (compareAndSetTail(t, node)) {      //判断将要新加入的Node对应prev是不是当前队列的最后一位? 如果是,就将最后一位Tail替换成当前Node  CAS操作,尾插到队列最后
+                    t.next = node;          //并将倒数第二个,也就是曾经的最后一位Node对象的next指向新尾插进入的Node  队列为双链结构
+                    return t;               //返回曾今的尾部Node
                 }
             }
         }
     }
 
     /**
+     *
+     * LEWISLI:已学
+     * 加入队列的方法
+     *
+     * 但该方法中 除了new Node()外其他逻辑
+     * 与 它调用到的 enq方法逻辑几乎一致
+     * enq方法完全可以替代addWaiter实现功能
+     *
+     * 确实存在争议
+     *
      * Creates and enqueues node for current thread and given mode.
      *
      * @param mode Node.EXCLUSIVE for exclusive, Node.SHARED for shared
      * @return the new node
      */
     private Node addWaiter(Node mode) {
-        Node node = new Node(Thread.currentThread(), mode);
+
+        Node node = new Node(Thread.currentThread(), mode);     //初始化一个NODE
         // Try the fast path of enq; backup to full enq on failure
-        Node pred = tail;
+        Node pred = tail;       //第一次初始化,尾部Node tail一定是空
         if (pred != null) {
+
+            /*
+            当队列非空时,尝试CAS尾插入队,其实一下逻辑,与enq中的else代码逻辑完全一致.
+            TODO:疑问 总觉得此处多此一举,完全可以直接调用enq方法.  只能解释说DougLea在多次尝试后,发现这样设计更节省性能
+            */
             node.prev = pred;
             if (compareAndSetTail(pred, node)) {
                 pred.next = node;
@@ -641,6 +681,8 @@ public abstract class AbstractQueuedSynchronizer
          * to clear in anticipation of signalling.  It is OK if this
          * fails or if status is changed by waiting thread.
          */
+
+        /*将为负的wait状态值改回0*/
         int ws = node.waitStatus;
         if (ws < 0)
             compareAndSetWaitStatus(node, ws, 0);
@@ -652,12 +694,20 @@ public abstract class AbstractQueuedSynchronizer
          * non-cancelled successor.
          */
         Node s = node.next;
+
+        /*
+        如果头部节点的下一节点是空,则需要向后寻找,源码中用的是从后往前遍历,一直覆盖.
+        */
         if (s == null || s.waitStatus > 0) {
             s = null;
             for (Node t = tail; t != null && t != node; t = t.prev)
                 if (t.waitStatus <= 0)
                     s = t;
         }
+
+        /*
+        如果头节点的下一个节点非空,直接将他唤醒即可
+        */
         if (s != null)
             LockSupport.unpark(s.thread);
     }
@@ -784,6 +834,36 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
+     *
+     * LEWISLI:已学
+     * 判断当前Node 是不是需要Park睡眠
+     * 根据当前Node的前一个Node中的waitStatus值,该值正常情况下,初始化值是0
+     *
+     * 第一次调用shouldParkAfterFailedAcquire方法时
+     * waitStatus==0.会调用到else方法中,返回false并把waitStatus改成-1
+     * 其实就是该自己一次机会,第一次认为不需要Park睡眠
+     * 但是waitStatus已经改为-1,意味着下一次判断,会返回true
+     *
+     * 多给一次机会,多一次自旋.
+     * 可以多一点时间段的等待
+     * 最重要的原因是,尽量的避免线程被park(park是重量锁,消耗大)
+     *
+     *
+     *
+     * TODO:疑问 为什么只给2次机会呢
+     * 解释:这个只能解释为,DougLea对次数为2,结合硬件专家,和调试给出他认为的最优次数
+     * 太多次空转一样消耗CPU
+     *
+     *
+     * ****:TODO:疑问  (该waitStatus是它前一个Node的waitStatus)
+     * 为什么不用自己的waitStatus状态. 而自己的waitStatus状态是给他的next节点使用
+     * *解释:1.因为他自己已经调用Park休眠了,休眠状态下,没办法进行值变更为休眠操作(注:自己没办法知道自己睡着了)
+     *     2.在解锁时会有该设计用法的体现
+     *      *追问1,那为什么不在Park之前修改值呢
+     *      *解释1:因为先修改值后,并不能Park一定成功,如果Park异常,会导致休眠状态-1错误
+     *      *追问2,将prev的状态值修改,一样会有park失败,导致状态不一致的问题啊
+     *      *解释2:目前只能解释到,prev的值被错误改为休眠,并不会产生大的影响, 最多只是多给了当前Node一次自旋的机会
+     *
      * Checks and updates status for a node that failed to acquire.
      * Returns true if thread should block. This is the main signal
      * control in all acquire loops.  Requires that pred == node.prev.
@@ -794,7 +874,7 @@ public abstract class AbstractQueuedSynchronizer
      */
     private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
         int ws = pred.waitStatus;
-        if (ws == Node.SIGNAL)
+        if (ws == Node.SIGNAL)          //第一次调用shouldParkAfterFailedAcquire会执行else中的compareAndSetWaitStatus方法,将waitStatus改为-1,那么下一次进入方法,waitStatus == Node.SIGNAL将为true
             /*
              * This node has already set status asking a release
              * to signal it, so it can safely park.
@@ -815,12 +895,15 @@ public abstract class AbstractQueuedSynchronizer
              * need a signal, but don't park yet.  Caller will need to
              * retry to make sure it cannot acquire before parking.
              */
-            compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+            compareAndSetWaitStatus(pred, ws, Node.SIGNAL);     //第一次进入shouldParkAfterFailedAcquire方法,该Node的waitStatus值为0,改为1返回false,给到当前Node多一次自旋CAS获取锁的机会
         }
         return false;
     }
 
     /**
+     * LEWISLI:已学
+     * 打上中断标记
+     *
      * Convenience method to interrupt current thread.
      */
     static void selfInterrupt() {
@@ -828,12 +911,37 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
+     * LEWISLI:已学
+     * 该方法是将线程挂起的方法
+     * 被挂起后,线程一直在此等候,直到有线程调用它的unPark()
+     * 他才会被唤醒,然后继续执行下去
+     *
+     *
+     * park一样是重量级的,会调用OS操作
+     * 与wait,slepp,join不同,park挂起更"温和"
+     * wait等方法挂起后,调用中断方法interrupt()会报错,
+     * Park方式挂起,调用中断方法interrupt()只会修改Thread内部的状态标签值,不会抛异常
+     *
      * Convenience method to park and then check if interrupted
      *
      * @return {@code true} if interrupted
      */
     private final boolean parkAndCheckInterrupt() {
+
+        //这里调用重量级的Park方法将线程挂起
         LockSupport.park(this);
+        //park后的线程,会在这一行等待,直到调用unPark将其唤醒,然后代码继续执行
+
+
+        /*
+        这里判断了该线程在唤醒之前,有没有被中断过,有返回true ,没有则返回false
+        但interrupted(),与isInterrupted()不同,
+        区别在于interrupted()获取到true false后,会将标记重置,而isInterrupted不会做重置的工作
+
+        有时候重置操作会改变原先的用户行为,所以某些场景 会需要再执行Thread.currentThread().interrupt(),将标记改回
+        注:比如acquire中调用了selfInterrupt(经常会觉得,这一番操作是无意义的, 何删掉这一行判断,acquire也不用做selfInterrupt标记改回操作
+        (****想法没错,这里就是不太合理的,这里单纯是为了满足acquireInterruptibly调用而写, 其实完全可以写两套给acquire和acquireInterruptibly分别调用,在之后的JDK版本中好像有被优化掉***)
+        */
         return Thread.interrupted();
     }
 
@@ -847,6 +955,21 @@ public abstract class AbstractQueuedSynchronizer
      */
 
     /**
+     * LEWISLI:已学
+     * 该方法不单纯是让线程阻塞,而是做判断
+     * 如果当前线程在队列第一位,它CAS尝试获取锁,如果获取失败,会调用shouldParkAfterFailedAcquire方法判断要不要被Park,
+     * shouldParkAfterFailedAcquire方法第一次返回false, 给线程一次自旋的机会, 也就是首位线程有两次调用CAS获取锁的机会
+     * 如果还是失败,第二次循环中调用shouldParkAfterFailedAcquire方法会返回true.
+     * 并继续调用parkAndCheckInterrupt方法将线程Park,
+     *
+     * 线程走入parkAndCheckInterrupt方法后,会在该方法内park休眠,
+     * 直到被releasez逻辑代码调用unPark唤醒后,才继续执行
+     *
+     *
+     * 其他线程因为不在队列首位,还在排队.所以不做无意义的CAS,
+     * 也会调用到parkAndCheckInterrupt,然后同样调用park,使它休眠,等待被唤醒
+     *
+     *
      * Acquires in exclusive uninterruptible mode for thread already in
      * queue. Used by condition wait methods as well as acquire.
      *
@@ -859,15 +982,32 @@ public abstract class AbstractQueuedSynchronizer
         try {
             boolean interrupted = false;
             for (;;) {
+
+                //获取当前Node的前一个Node,其实等同于 node.prev,但是predecessor方法中严格校验了上一个Node不能是NULL, 因为队列一旦初始化时,生成了无用的Node放在头部, 之后的逻辑是不允许头部Node为NULL的
                 final Node p = node.predecessor();
-                if (p == head && tryAcquire(arg)) {
-                    setHead(node);
-                    p.next = null; // help GC
+                if (p == head && tryAcquire(arg)) {     //判断该节点的prev是不是头部. 如果是,证明它是队列第一个,它有资格自旋获取锁,所以他会调继续用tryAcquire();
+
+
+                    /*
+                    * 获取锁成功后,需要马上执行移出队列操作
+                    */
+                    setHead(node);      //将当前节点设为头节点,并在setHead中奖Node的线程 与 prev设为空,这样他就是成为一个空的Node头节点
+                    p.next = null; //help GC 旧的头部曾被其他node引用,又被head引用,但setHead方法中,这些引用都失去了..此时他已是孤儿对象,可被回收,这里还将next指向null是为帮助JVM尽快回收(因为Node比较大)
                     failed = false;
                     return interrupted;
                 }
+
+
+                /*
+                线程不在队列首位,或者尝试获取又失败了.
+                则需要调用shouldParkAfterFailedAcquire判断是不是需要Park睡眠
+                如果需要睡眠 则调用parkAndCheckInterrupt睡眠逻辑
+                */
                 if (shouldParkAfterFailedAcquire(p, node) &&
-                    parkAndCheckInterrupt())
+                    parkAndCheckInterrupt())        //进入parkAndCheckInterrupt后的线程,就会在parkAndCheckInterrupt方法中被Park,直到被唤醒后,才继续开始循环.被唤醒后,正常情况下parkAndCheckInterrupt返回都是flase
+
+
+                    /*如果进入该if代码块 证明被park后直到被unPark唤醒其间,已经被其他线程调用中断,或是自己异常中断*/
                     interrupted = true;
             }
         } finally {
@@ -1183,6 +1323,20 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
+     *
+     * LEWISLI:已学
+     * 获取锁方法,自旋获取锁,类似于lock
+     * 实际应用中ReentrantLock的lock方法,也是调用了该方法实现逻辑
+     *
+     * 因为该方法为void,
+     * 即表示线程调用该方法,且正常结束,则表示获取锁成功
+     *
+     * 所以,想表示获取锁失败
+     * 方法内,一般需要通过自旋获取,或者线程终止等操作. 来阻止方法结束
+     * 以表示正在等待锁,或 获取锁失败
+     * 调用acquireQueued方法中逻辑 就是阻止(park)的核心
+     *
+     *
      * Acquires in exclusive mode, ignoring interrupts.  Implemented
      * by invoking at least once {@link #tryAcquire},
      * returning on success.  Otherwise the thread is queued, possibly
@@ -1195,12 +1349,29 @@ public abstract class AbstractQueuedSynchronizer
      *        can represent anything you like.
      */
     public final void acquire(int arg) {
-        if (!tryAcquire(arg) &&
-            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
-            selfInterrupt();
+        if (!tryAcquire(arg) &&     //先尝试获取锁
+            acquireQueued(addWaiter(Node.EXCLUSIVE), arg))      //如果获得锁失败,调用acquireQueued入队方法
+            selfInterrupt();    //这里只是为了还原用户行为,还原用户打上的中断标记,因为这个标记被acquireQueued中的parkAndCheckInterrupt中的Thread.interrupted()方法给抹去了
     }
 
     /**
+     * LEWISLI:已学
+     * 也是自旋获取锁方法
+     *
+     * 获取失败同样加入队列,判断挂机,等待唤醒
+     *
+     * 与acquire()方法几乎一致,区别在于对于挂起期间被中断的相应
+     * acquire调用acquireQueued
+     * acquireInterruptibly调用doAcquireInterruptibly
+     *
+     * acquireQueued与doAcquireInterruptibly代码相差一行
+     * acquireQueued()返回结果表示是否被中断, 但返回了true后,什么也不做,只是再由上级与acquire调用selfInterrupt简单还原了用户行为
+     * doAcquireInterruptibly无返回值,也不还原用户行为, 而是直接代码中相应中断,抛出异常
+     *
+     *
+     *
+     *
+     *
      * Acquires in exclusive mode, aborting if interrupted.
      * Implemented by first checking interrupt status, then invoking
      * at least once {@link #tryAcquire}, returning on
@@ -1248,6 +1419,13 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
+     * LEWISLI:已学
+     * 释放锁方法,会尝试释放锁
+     *
+     * 释放锁成功后会判断首节点的waitState状态
+     * 如果是-1表示 next的线程在挂起
+     * 需要调用unPark将其唤醒
+     *
      * Releases in exclusive mode.  Implemented by unblocking one or
      * more threads if {@link #tryRelease} returns true.
      * This method can be used to implement method {@link Lock#unlock}.
@@ -1467,6 +1645,20 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
+     * LEWISLI:已学
+     *
+     * 判断当前线程是否需要排队
+     * 当然首先判断有没有队伍,
+     * 没有队伍就不需要排队
+     * 如果有队伍,还需要判断当前线程是不是刚好就是队伍中的第一个(即Head的next所指向的那一个)
+     *
+     * 该方法在ReentrantLock的FairSync中重写tryAcquire方法时调用到
+     * 请牢记,该方法返回true是表示的是需要排队
+     * 返回false是才表示,不需要加入队列
+     * 其实我们期待的是不需要加入队列 必须head==next 或者 head.next == null 或者 队列存在时,但head.next的thread为当前  都可以返回false
+     *
+     *
+     *
      * Queries whether any threads have been waiting to acquire longer
      * than the current thread.
      *
@@ -1516,7 +1708,29 @@ public abstract class AbstractQueuedSynchronizer
         Node t = tail; // Read fields in reverse initialization order
         Node h = head;
         Node s;
-        return h != t &&
+
+        /*
+
+        return中的代码逻辑有点绕,我们做个傻瓜式的拆分
+        优化可读性后就是一下代码:
+
+        if(h == t){
+            return false   //头尾同一节点,无队列不排队
+        }
+        if(h.next == null){
+            //大家的疑问都在这里,为什么头节点的下一个是null的时候返回true 需要加入队列,头节点都只想空了,加入个寂寞?????
+            //但我个人的理解是,当h != t 是 h.next也不可能是空的. 我怀疑这里的判断,单纯是防止s.thread时发生空指针错误,做了必要的判空操作
+            return true
+        }
+        if(h.next.thread == Thread.currentThread()){
+            //这个好理解,如果我自己就在队列中,还恰好就是下一个,那我没必要在做加入队列的操作,继续抢锁就完事了
+            return false
+        }
+        //所以,当前线程不等于队列首位时, 源码中s.thread != Thread.currentThread() 为 true时 ,才返回true
+        return true
+
+        */
+        return h != t &&    //判断头节点与尾节点是不是同一个,不是的话,队列数据存在有效值,   当head和tail是同一个对象是,正常理解,该对象应该就是空的头部节点,就是初始化时的节点
             ((s = h.next) == null || s.thread != Thread.currentThread());
     }
 
