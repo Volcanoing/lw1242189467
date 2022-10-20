@@ -36,7 +36,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
     static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
     /**
-     * 并发级别，遗留下来的，为兼容以前的版本
+     * 并发级别，遗留下来的，为兼容以前的 版本
      */
     private static final int DEFAULT_CONCURRENCY_LEVEL = 16;
 
